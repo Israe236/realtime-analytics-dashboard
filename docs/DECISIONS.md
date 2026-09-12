@@ -208,9 +208,85 @@ Details:
 - **Dead letters are written in the background, in batches.** They are diagnostics; the
   request should not wait for them. The buffer is bounded (10,000); if someone floods the
   API with garbage, extra items are counted as `dropped` instead of using unbounded memory.
-- **NUL bytes are escaped** and payloads are truncated at 16,000 characters. What went wrong:
-  a test sending `\x00` bytes showed that Postgres `text` cannot store NUL characters at all —
-  the insert fails — so raw bodies are sanitised first.
+- **NUL bytes are escaped** and payloads are truncated at 16,000 characters. Postgres `text`
+  cannot store the NUL character (`\x00`) at all — an insert containing one fails — so a
+  garbage body could otherwise break the very table meant to capture garbage. A test posts
+  `\x00` bytes to prove the dead-letter path survives it.
 - **Ordering subtlety:** for a batch, we submit the valid events to the writer *before*
   dead-lettering the invalid ones. If the writer is full we answer 429 and the producer resends
   the whole batch; recording dead letters first would store the same bad items twice.
+
+---
+
+## 6. The event generator
+
+The generator is a small asyncio program that behaves like a busy shop's backend.
+
+**Traffic shape.** The target rate (e.g. 50 events/s) is multiplied by a *daily curve*: a
+low night, a late-morning bump, a lunch peak and a strong evening peak. The curve is
+normalised so its 24-hour average is exactly 1, which keeps "events per second" meaning
+the daily average. A simulated clock runs faster than real time so a demo shows the whole
+day: by default ×12, one simulated day lasts two real hours.
+
+*Why ×12 and not faster:* at ×60 the evening-to-night decline happens within a few real
+minutes, which the "revenue drop" alert (last 5 minutes vs previous 5 minutes) would
+correctly report as a drop — every day. At ×12, five real minutes are one simulated hour,
+so the natural curve changes slowly enough that alerts fire on real anomalies, not on
+bedtime.
+
+**Orders, not just events.** Each new order emits `order_placed` and schedules its future
+events on a min-heap (a priority queue sorted by due time):
+prepaid orders go placed → paid → shipped; cash-on-delivery orders go placed → shipped →
+paid (the courier collects the money); some orders are cancelled instead, and COD orders
+are cancelled more often. Because the target is expressed in events/s, the generator
+converts it into new orders/s by dividing by the expected number of events per order
+(≈ 2.93); a test checks that estimate against a simulation of 5,000 orders.
+
+**Amounts** are log-normal per category (a median and a spread): most fashion orders
+are a few hundred MAD, a few are expensive; electronics have a much higher median. That is
+how real basket values look — many small, a long tail of large ones.
+
+**Bursts** (flash sales, ×3–5 traffic for 20–45 s) arrive as a Poisson process: the waiting
+time between bursts is drawn from an exponential distribution, which is the standard model
+for independent random arrivals.
+
+**Anomalies** exist to exercise alerting. Every ~7 minutes one of these runs, for long
+enough to dominate a 5-minute alert window:
+
+| Anomaly | Effect | Alert it should trigger |
+|---|---|---|
+| `cancellation_spike` (4 min) | new orders cancelled at 55 % | cancellation rate |
+| `revenue_drop` (7 min) | order rate falls to 10 % | revenue drop |
+| `bad_producer` (2.5 min) | 25 % of events malformed | dead-letter rate |
+
+**Malformed events** (1 % normally) come from a list of concrete corruptions: missing field,
+negative amount, text instead of a number, unknown category, naive timestamp, bad UUID,
+empty city, a string instead of an object. A test runs every corruption through the
+*backend's* Pydantic model and asserts it is rejected — so the generator and the API
+cannot silently drift apart.
+
+**Sending and backpressure (client side).**
+
+- One request at a time. If the API is slow, the next batch simply grows (up to 2,000
+  events): the generator slows down exactly as much as the API needs.
+- `429`/`503` → wait for `Retry-After`, then resend *the same bytes*. That is safe because
+  event IDs make retries idempotent.
+- Network errors → exponential backoff **with full jitter**: wait a random time between
+  0 and `min(10 s, 0.2 s × 2^attempt)`. Without the randomness, many clients that failed at
+  the same moment would all retry at the same moment and knock the server over again
+  (the "thundering herd").
+- Other 4xx (e.g. 413) → drop and log; resending can never succeed.
+- The outgoing buffer is bounded (200,000 events). If the API is down for a long time the
+  generator drops the *oldest* events and counts them — for a live dashboard, fresh data
+  is worth more than a complete backlog, and the generator must not run out of memory.
+
+---
+
+## 7. Continuous integration
+
+GitHub Actions runs on every push and pull request. The Python job starts a real
+PostgreSQL 17 as a *service container* (the same image as docker compose), then runs exactly
+the commands used locally: `uv sync --frozen` (fails if the lock file is stale), `ruff check`,
+`ruff format --check`, `mypy --strict`, and `pytest`. Database tests are not mocked: the
+aggregation logic *is* SQL, so mocking the database would test nothing.
+`concurrency` cancels an older run on the same branch when a newer commit is pushed.

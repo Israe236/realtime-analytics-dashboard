@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python · lint, types, tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: analytics
+          POSTGRES_PASSWORD: analytics
+          POSTGRES_DB: analytics
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U analytics -d analytics"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      TEST_DATABASE_ADMIN_URL: postgresql://analytics:analytics@localhost:55432/postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: Install
+        run: uv sync --frozen
+      - name: Ruff (lint)
+        run: uv run --frozen ruff check .
+      - name: Ruff (format)
+        run: uv run --frozen ruff format --check .
+      - name: Mypy (strict)
+        run: uv run --frozen mypy backend/src backend/tests generator/src generator/tests
+      - name: Pytest
+        run: uv run --frozen pytest -q
