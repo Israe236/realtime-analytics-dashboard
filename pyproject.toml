@@ -1,0 +1,57 @@
+[project]
+name = "realtime-analytics-dashboard"
+version = "0.1.0"
+description = "uv workspace root: shared dev tooling for the backend, generator and benchmark"
+requires-python = ">=3.13"
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["backend", "generator", "bench"]
+
+[tool.uv.sources]
+analytics-api = { workspace = true }
+event-generator = { workspace = true }
+bench = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "analytics-api",
+    "event-generator",
+    "bench",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "httpx>=0.28",
+    "ruff>=0.9",
+    "mypy>=1.14",
+    "asyncpg-stubs>=0.30",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # allow non-ASCII city names like "Fès" in strings/comments
+
+[tool.ruff.lint.isort]
+known-first-party = ["analytics_api", "event_generator", "bench"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = ["backend/src", "generator/src", "bench/src"]
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["backend/tests", "generator/tests"]
