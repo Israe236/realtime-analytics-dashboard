@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Node / frontends
+node_modules/
+dist/
+.angular/
+.expo/
+web-build/
+coverage/
+*.tsbuildinfo
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Data dumps / local artifacts
+*.dump
+*.sql.gz
+*.csv
+pgdata/
+data/
+bench/results/*.tmp
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
