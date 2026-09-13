@@ -18,5 +18,44 @@ services:
       timeout: 3s
       retries: 30
 
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      APP_DATABASE_URL: postgresql://analytics:analytics@postgres:5432/analytics
+    # Published for the benchmark and API docs (http://localhost:8080/docs); the dashboards
+    # reach the API through their own nginx proxy on the internal network.
+    ports:
+      - "${API_PORT:-8080}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  generator:
+    build:
+      context: .
+      dockerfile: generator/Dockerfile
+    environment:
+      GEN_API_URL: http://api:8000
+      GEN_EVENTS_PER_SECOND: ${GEN_EVENTS_PER_SECOND:-50}
+      GEN_TIME_SCALE: ${GEN_TIME_SCALE:-12}
+      GEN_ANOMALIES: ${GEN_ANOMALIES:-true}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
