@@ -10,10 +10,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from analytics_api import health
+from analytics_api.alerts import router as alerts
 from analytics_api.config import Settings, get_settings
 from analytics_api.db.migrate import apply_migrations
 from analytics_api.db.pool import create_pool
 from analytics_api.ingestion import router as ingestion
+from analytics_api.realtime import router as realtime
 from analytics_api.services import Services
 
 log = logging.getLogger("analytics_api")
@@ -40,6 +42,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Realtime Analytics API", version="0.1.0", lifespan=lifespan)
     app.include_router(ingestion.router)
     app.include_router(health.router)
+    app.include_router(realtime.router)
+    app.include_router(alerts.router)
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:

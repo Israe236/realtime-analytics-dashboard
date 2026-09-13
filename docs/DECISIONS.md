@@ -290,3 +290,134 @@ the commands used locally: `uv sync --frozen` (fails if the lock file is stale),
 `ruff format --check`, `mypy --strict`, and `pytest`. Database tests are not mocked: the
 aggregation logic *is* SQL, so mocking the database would test nothing.
 `concurrency` cancels an older run on the same branch when a newer commit is pushed.
+
+---
+
+## 8. Why WebSockets instead of polling
+
+**Polling** means every browser asks "anything new?" every N seconds. It has two bad knobs:
+
+- Poll often (every 500 ms) → latency is OK, but 1,000 open dashboards make 2,000 HTTP
+  requests per second, each running the metric queries, *even when nothing changed*.
+- Poll rarely (every 10 s) → cheap, but the "live" dashboard is up to 10 s stale.
+
+**A WebSocket** is one long-lived connection per client. The server pushes when something
+changes, so latency is bounded by how fast the server reacts, and cost does not grow with
+how impatient the clients are. We still need a few HTTP endpoints (`/api/metrics/snapshot`,
+`/api/alerts`) for the first page load and history, but the live stream is push.
+
+**Why not Server-Sent Events (SSE)?** SSE would also work — our stream is one-directional.
+WebSockets were chosen because the requirement asked for them, every frontend stack has
+first-class support (including React Native), and they leave room for client → server
+messages later (e.g. "subscribe to one city only").
+
+**Cost model — the key point.** Queries do *not* scale with clients:
+
+1. A committed batch sets a "dirty" flag (no I/O, nanoseconds).
+2. The broadcaster wakes, runs **one** snapshot query set, serialises the JSON **once**.
+3. The same string is handed to every client.
+
+So 1 client or 1,000 clients cause the same database load. The broadcaster is throttled:
+at most one snapshot every 250 ms, however many batches commit (at 5,000 events/s there may
+be dozens of commits per second; clients don't need dozens of redraws). With no traffic it
+still refreshes every 2 s so rolling windows keep moving and a stalled pipeline becomes
+visible.
+
+**Snapshot, not deltas.** Each message is a complete picture (KPIs, 60 minute-buckets,
+rankings). A snapshot is a few KB, so sending the whole thing is affordable and makes
+everything simpler: a client that missed messages, reconnected, or skipped some because it
+was slow is correct again after the next one. With deltas, one lost message leaves a
+client wrong until it resynchronises.
+
+**Consistent numbers.** A snapshot runs its four queries inside one read-only
+`REPEATABLE READ` transaction, so they all see the database at the same instant; otherwise
+the chart could include a batch that the KPI cards don't.
+
+**The `through_seq` watermark.** Before building a snapshot, the broadcaster reads the
+writer's last committed `seq`. Everything up to that number was committed before the
+snapshot transaction started, so the snapshot is guaranteed to include it. The benchmark
+uses this to measure end-to-end latency precisely ("event committed with seq 81,234 was
+first visible to a client at time T").
+
+---
+
+## 9. Slow clients, disconnections and backpressure on the WebSocket side
+
+A WebSocket server has its own backpressure problem: if one client is on a bad mobile
+connection and reads slowly, messages pile up for it. A naive `for client in clients:
+await client.send(msg)` loop lets that one client delay *everyone*, and buffering without
+limit eventually exhausts memory.
+
+What we do instead:
+
+- **Publishing never waits for a client.** Each connection has its own mailbox and its
+  own sender task. The broadcaster just drops the message in every mailbox and moves on.
+- **Conflation ("latest wins") for snapshots and the event feed.** A mailbox holds at most
+  one pending snapshot. If a new one arrives before the old one was sent, the old one is
+  replaced. A slow client simply receives fewer, newer snapshots — which is exactly right,
+  because each snapshot is complete. Memory per client stays constant.
+- **A small reliable queue** for messages that must not be skipped (`hello`, `alert`,
+  `ping`). They are sent before any pending snapshot. If this queue overflows (200
+  messages), the client is hopelessly behind and is disconnected with close code 1008; it
+  will reconnect and get a fresh `hello` with the current alerts.
+- **Send timeout (5 s).** A client whose TCP connection died silently (laptop lid closed,
+  phone lost signal) can make a send hang. After 5 s the connection is dropped.
+- **Noticing disconnects.** Clients send nothing we need, but a second task keeps reading
+  from the socket, because reading is how a close (or an abrupt TCP reset) is detected. When
+  either the reader or the sender finishes, the other is cancelled and the client is
+  removed from the hub. A test aborts a client's TCP connection without a close handshake
+  and checks the other client keeps receiving updates.
+- **Capacity limit.** Beyond `APP_WS_MAX_CLIENTS` (1,000) new connections are accepted and
+  immediately closed with code **1013 "try again later"**, so clients back off instead of
+  the server degrading for everyone.
+- **Heartbeat.** The server sends `{"type": "ping"}` every 15 s. Browsers don't expose
+  WebSocket protocol-level pings to JavaScript, so this application-level message lets a
+  client detect a dead connection ("no message for 30 s → reconnect").
+
+**Client side** (implemented in the frontends): reconnect with exponential backoff and full
+jitter (the same idea as the generator, for the same thundering-herd reason — if the API
+restarts, 1,000 dashboards must not reconnect in the same millisecond).
+
+---
+
+## 10. Alerting
+
+Four rules run every 5 seconds against the aggregate tables (never the raw events):
+
+| Rule | Fires when | Resolves when | Minimum data | Severity |
+|---|---|---|---|---|
+| `cancellation_rate` | cancelled / placed ≥ 25 % over the last 5 min | < 20 % | 30 orders | warning |
+| `revenue_drop` | revenue of the last 5 complete minutes is ≥ 50 % below the 5 minutes before | drop < 40 % | 2,000 MAD baseline | critical |
+| `dead_letter_rate` | rejected / received ≥ 5 % over the last 5 min | < 4 % | 100 events | warning |
+| `ingestion_stalled` | no batch committed for ≥ 30 s | < 30 s | at least one event since start | critical |
+
+All thresholds are environment variables (`APP_ALERT_*`).
+
+Design choices:
+
+- **Rules are pure functions.** A rule gets numbers and returns "value, breached,
+  recovered, message". No database, no clock. That makes every edge case a one-line unit
+  test (zero orders, tiny baseline, exactly at the threshold, revenue *growth*).
+- **Minimum volume.** At 3 orders, one cancellation is 33 % — statistically meaningless.
+  Below the minimum, a rule returns "no data", which leaves the alert state unchanged.
+- **Complete minutes for comparisons.** The current minute is still filling up; comparing
+  "last 5 minutes including 12 seconds of the current one" to "5 full minutes before" would
+  always look like a drop. The revenue rule therefore uses complete minutes only (a test
+  puts a large amount in the current minute and checks it is ignored).
+- **Hysteresis.** Fire at 25 %, resolve only under 20 % (resolve = threshold × 0.8). A value
+  wobbling around 25 % does not produce a stream of fire/resolve/fire notifications.
+- **Consecutive evaluations.** A condition must hold for 2 evaluations in a row (~10 s)
+  before an alert fires or resolves — like Prometheus' `for:` clause. One noisy sample does
+  not page anyone.
+- **The database guarantees one open alert per rule** via a partial unique index
+  (`UNIQUE (rule) WHERE state = 'firing'`). Opening an alert is `INSERT … ON CONFLICT DO
+  NOTHING`, so even two API instances evaluating at the same moment cannot open duplicates.
+- **Restarts don't duplicate alerts.** On start-up the evaluator loads firing alerts from
+  the table and resumes tracking them.
+- **Delivery.** State changes are pushed over the WebSocket through the reliable (never
+  conflated) queue. A client that connects later receives the currently open alerts in its
+  `hello` message, and `GET /api/alerts` returns the history.
+
+Limitation: thresholds are static. A shop whose normal cancellation rate is 30 % would need
+different settings; per-segment baselines or anomaly detection on seasonality would be the
+next step.

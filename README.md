@@ -15,6 +15,8 @@ live dashboards in React, Angular and React Native.
 | M2 Ingestion API, group-commit writer, incremental aggregates, dead letters | ✅ |
 | M3 Event generator (daily curve, bursts, anomalies, malformed events, backoff) | ✅ |
 | M4 CI: ruff, mypy --strict, pytest against Postgres | ✅ |
+| M5 Metric snapshots + WebSocket fan-out (conflation, slow-client handling) | ✅ |
+| M6 Alerting rules with hysteresis, pushed over WebSocket | ✅ |
 
 ## Development (so far)
 
@@ -37,3 +39,18 @@ Ingestion endpoints:
 | `POST` | `/api/events/batch` | JSON array; each event validated separately. `202` after commit with `{accepted, rejected, errors[]}`. `400` unparseable body, `413` too large, `429` writer saturated (`Retry-After`), `503` commit timeout. |
 | `POST` | `/api/events` | Single event; `422` with error details if invalid. |
 | `GET` | `/api/health` | Database reachability and writer counters. |
+| `GET` | `/api/metrics/snapshot` | Latest metrics snapshot (same JSON as the WebSocket message). |
+| `GET` | `/api/alerts?limit=50` | Alert history, newest first. |
+| `WS` | `/ws/live` | Server → client stream: `hello` (open alerts, recent events), `snapshot` (≤ 4/s), `events` (sampled feed), `alert`, `ping` (every 15 s). |
+
+## Alerting rules
+
+| Rule | Fires when | Resolves when | Minimum data |
+|---|---|---|---|
+| `cancellation_rate` | cancelled / placed ≥ 25 % (last 5 min) | < 20 % | 30 orders |
+| `revenue_drop` | last 5 complete minutes ≥ 50 % below the previous 5 | drop < 40 % | 2,000 MAD baseline |
+| `dead_letter_rate` | rejected / received ≥ 5 % (last 5 min) | < 4 % | 100 events |
+| `ingestion_stalled` | nothing committed for ≥ 30 s | < 30 s | one event since start |
+
+A condition must hold for 2 consecutive evaluations (every 5 s) to fire or resolve. All
+thresholds are configurable with `APP_ALERT_*` environment variables.

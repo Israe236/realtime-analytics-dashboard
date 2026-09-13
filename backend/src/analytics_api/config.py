@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     alert_dead_letter_rate_threshold: float = 0.05
     alert_dead_letter_min_events: int = 100
     alert_stall_seconds: float = 30.0
+    # Resolve thresholds = fire threshold x this ratio (hysteresis against flapping).
+    alert_resolve_ratio: float = 0.8
+    # Consecutive evaluations needed before an alert fires / resolves.
+    alert_fire_after_evaluations: int = 2
+    alert_resolve_after_evaluations: int = 2
 
 
 @lru_cache
