@@ -1,0 +1,25 @@
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand__mark" aria-hidden="true">◆</span>
+      <div>
+        <h1>Order analytics</h1>
+        <p class="muted small">Moroccan e-commerce · last 60 minutes · Angular</p>
+      </div>
+    </div>
+    <app-pipeline-stats />
+    <app-connection-badge />
+  </header>
+
+  <app-alert-banner />
+  <app-kpi-cards />
+
+  <main class="grid">
+    <div class="grid__wide"><app-revenue-chart /></div>
+    <div class="grid__tall"><app-live-feed /></div>
+    <app-category-chart />
+    <app-top-cities />
+    <app-status-panel />
+    <app-alert-history />
+  </main>
+</div>

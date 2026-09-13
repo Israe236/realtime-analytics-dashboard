@@ -1,0 +1,12 @@
+/* The visual design is shared with the React dashboard. */
+@import '../../shared/styles/dashboard.css';
+
+app-root,
+app-revenue-chart,
+app-category-chart,
+app-top-cities,
+app-status-panel,
+app-alert-history,
+app-live-feed {
+  display: block;
+}
