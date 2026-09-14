@@ -57,5 +57,40 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Three dashboards over the same API. Each image is a static build served by nginx, which
+  # also proxies /api and /ws/live to the api service (same origin: no CORS).
+  dashboard-react:
+    build:
+      context: ./frontends
+      dockerfile: web-react/Dockerfile
+    ports:
+      - "${REACT_PORT:-3000}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard-angular:
+    build:
+      context: ./frontends
+      dockerfile: web-angular/Dockerfile
+    ports:
+      - "${ANGULAR_PORT:-3001}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard-react-native:
+    build:
+      context: ./frontends
+      dockerfile: mobile-react-native/Dockerfile
+    ports:
+      - "${REACT_NATIVE_WEB_PORT:-3002}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:

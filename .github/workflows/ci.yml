@@ -38,6 +38,46 @@ jobs:
       - name: Ruff (format)
         run: uv run --frozen ruff format --check .
       - name: Mypy (strict)
-        run: uv run --frozen mypy backend/src backend/tests generator/src generator/tests
+        run: uv run --frozen mypy backend/src backend/tests generator/src generator/tests bench/src scripts
       - name: Pytest
         run: uv run --frozen pytest -q
+      - name: TypeScript protocol is up to date with the Pydantic models
+        run: uv run --frozen python scripts/gen_ts_types.py --check
+
+  frontends:
+    name: Frontend · ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: shared
+            script: npm test && npx tsc --noEmit
+          - app: web-react
+            script: npm run lint && npm run build
+          - app: web-angular
+            script: npx ng build && npx ng test --watch=false
+          - app: mobile-react-native
+            script: npx tsc --noEmit && npx expo export --platform web
+    defaults:
+      run:
+        working-directory: frontends/${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontends/${{ matrix.app }}/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Check
+        run: ${{ matrix.script }}
+
+  docker:
+    name: Docker · compose build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build every image
+        run: docker compose build

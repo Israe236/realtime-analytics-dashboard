@@ -40,6 +40,8 @@ class IngestResult(BaseModel):
     accepted: int
     rejected: int
     errors: list[ItemError] = []
+    # Every WebSocket snapshot with through_seq >= this value includes these events.
+    committed_through_seq: int = 0
 
 
 def _time_bounds(settings: Settings) -> TimeBounds:
@@ -129,6 +131,7 @@ async def ingest_batch(request: Request, services: ServicesDep) -> IngestResult:
         accepted=len(valid),
         rejected=len(rejected),
         errors=[ItemError(index=i, errors=e) for i, _, e in rejected[:MAX_REPORTED_ERRORS]],
+        committed_through_seq=services.writer.committed_seq,
     )
 
 
@@ -144,4 +147,4 @@ async def ingest_one(request: Request, services: ServicesDep) -> IngestResult:
         services.dead_letters.add("validation_error", data, details)
         raise HTTPException(422, details) from exc
     await _await_commit(_submit(services.writer, [event]), settings.ingest_ack_timeout_s)
-    return IngestResult(accepted=1, rejected=0)
+    return IngestResult(accepted=1, rejected=0, committed_through_seq=services.writer.committed_seq)

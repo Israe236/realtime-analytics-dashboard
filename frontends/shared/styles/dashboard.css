@@ -398,6 +398,12 @@ button {
   height: 100%;
 }
 
+/* The feed spans two grid rows; cap it so a long list never stretches the rows beside it. */
+.grid__tall .feed {
+  max-height: 760px;
+  overflow: hidden;
+}
+
 .feed__list {
   display: flex;
   flex-direction: column;

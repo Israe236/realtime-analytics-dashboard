@@ -1,5 +1,1 @@
-/* React-specific layout tweaks (the shared design lives in frontends/shared/styles). */
-.grid__tall .feed {
-  max-height: 760px;
-  overflow: hidden;
-}
+/* Layout and component styles are shared with the Angular app: frontends/shared/styles. */

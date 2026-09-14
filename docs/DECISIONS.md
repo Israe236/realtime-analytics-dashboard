@@ -421,3 +421,99 @@ Design choices:
 Limitation: thresholds are static. A shop whose normal cancellation rate is 30 % would need
 different settings; per-segment baselines or anomaly detection on seasonality would be the
 next step.
+
+---
+
+## 11. Three dashboards, one contract
+
+The same live data is rendered by three clients: **React** (web), **Angular** (web) and
+**React Native** (Expo — phone, plus a web build). The goal is to show the same problem
+solved idiomatically in each stack, without letting them drift apart.
+
+### What is shared, and how
+
+`frontends/shared` holds framework-free TypeScript:
+
+- **`protocol.ts` — generated, never hand-written.** `scripts/gen_ts_types.py` exports the
+  JSON Schema of the backend's Pydantic WebSocket models and renders TypeScript
+  interfaces. If a backend field is renamed, regenerating the file makes all three
+  frontends fail to compile at the exact line that uses the old name. `--check` mode lets CI
+  fail when someone changes the models but forgets to regenerate. (A small custom
+  generator was chosen over an npm tool so the check runs in the Python CI job with no
+  Node dependency.)
+- **`LiveClient`** — the reconnecting WebSocket client (backoff with jitter, heartbeat
+  timeout, `reconnectNow()`), with no React or Angular imports. React/React Native wrap it
+  in a provider and hook; Angular wraps it in an injectable service. The tricky logic is
+  therefore written and unit-tested once.
+- Formatting helpers (MAD currency, percentages), the colour theme, SVG path maths for the
+  React Native chart, and the CSS shared by the two web apps.
+
+Each app imports it as `@shared/…` through a path alias: Vite `resolve.alias`, Angular
+`tsconfig` paths, and a custom Metro `resolveRequest` for React Native (Metro also needs the
+folder in `watchFolders`, and is told to resolve packages from the app's own
+`node_modules`, because `shared` has no dependencies of its own). The three apps are
+separate npm projects on purpose: React Native is sensitive to duplicated React copies,
+which npm workspaces with hoisting tend to create.
+
+**A reconnect detail worth knowing:** the failure counter is reset when the server sends
+`hello`, *not* when the socket opens. A server at capacity accepts the connection and
+immediately closes it with 1013; resetting on "open" would make clients retry at full speed
+forever. A unit test covers exactly this case.
+
+### How each app avoids flicker and needless re-renders
+
+The server sends a *complete* snapshot up to four times a second. Re-rendering the whole page
+4×/s would be wasteful, and re-animating charts 4×/s is what "flicker" looks like.
+
+| | React | Angular | React Native |
+|---|---|---|---|
+| Where live data lives | React Query cache (`setQueryData` on each message) | Signals in a root service | React Query cache |
+| How a component gets its slice | `useQuery({ select })`; structural sharing keeps unchanged slices `===`, so `memo` components skip rendering | `computed(…, { equal })` compares slices by value, so only readers of a changed slice update (OnPush, zoneless) | same as React |
+| Charts | Recharts, `isAnimationActive={false}`, memoised data | Chart.js created once; data arrays replaced and `chart.update('none')` | react-native-svg paths recomputed with `useMemo`; `<Svg>` stays mounted |
+| Lists | keyed by `event_id` | `@for … track event.event_id` | keyed by `event_id` |
+
+Keying the live feed by `event_id` means existing rows are kept and only new rows are
+created — which is also why the CSS fade-in animation plays for new events only.
+
+**REST + WebSocket together.** On page load, React Query / the Angular service fetch
+`/api/metrics/snapshot` and `/api/alerts` so the page is not empty while the socket
+connects. After that the socket owns the data. Because the REST response can arrive
+*after* a newer WebSocket snapshot, the loader keeps whichever has the later
+`generated_at`.
+
+**Same origin everywhere.** In Docker each dashboard is a static build served by nginx,
+which also proxies `/api` and `/ws/live` to the API; in development, Vite's and Angular's
+dev-server proxies do the same. The browser therefore never needs CORS, and the WebSocket
+URL is simply derived from the page's own address. The nginx WebSocket location disables
+proxy buffering (a buffered push is a delayed push) and raises the read timeout so idle but
+healthy connections (pinged every 15 s) are not cut.
+
+**React Native specifics.** Recharts needs the DOM, so the mobile charts are drawn with
+`react-native-svg` from the shared path helper. Mobile operating systems suspend background
+apps and silently kill their sockets, so the app listens to `AppState` and reconnects
+immediately when it returns to the foreground. On a phone, `EXPO_PUBLIC_API_URL` must point
+at the computer's LAN address, because `localhost` on a phone is the phone.
+As a precaution the WebSocket URL is built with a string replace rather than `new URL()`,
+since React Native's `URL` implementation has historically been incomplete.
+
+---
+
+## 12. What went wrong during development (and the fixes)
+
+- **Docker build of the API failed** with a hatch error about duplicate files. The
+  `pyproject.toml` had a `force-include` entry for the SQL migrations folder, which was
+  already inside the Python package. Local development used an editable install, which
+  never hit the problem; the container's non-editable build did. Fix: remove the redundant
+  entry (files inside the package are included automatically).
+- **Port 8000 already in use.** Another local Docker project was publishing port 8000. The
+  API is now published on 8080 by default and every host port is overridable
+  (`API_PORT`, `REACT_PORT`, …) instead of assuming a clean machine.
+- **Docker Desktop stopped responding** (its API returned HTTP 500 and `docker ps` hung) while
+  the backend stack, two frontend dev servers and a headless browser ran on a machine with
+  about 1.3 GB of free RAM. Fix: stop the dev servers, restart Docker Desktop, and verify the
+  dashboards through the lighter nginx containers instead. Lesson: a "live" system that
+  stops updating may be a host resource problem, not a code problem — which is exactly
+  what the `ingestion_stalled` alert and the freshness-lag indicator are for.
+- **Type-checking asyncpg pool connections.** `pool.acquire()` yields a proxy type, not a
+  `Connection`, so strict mypy rejected passing it to the migration runner. The function now
+  accepts both types explicitly.

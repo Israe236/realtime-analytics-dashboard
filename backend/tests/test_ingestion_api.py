@@ -42,7 +42,12 @@ async def test_valid_batch_is_committed_before_202(api: tuple[httpx.AsyncClient,
     client, services = api
     response = await post_batch(client, [event_payload() for _ in range(3)])
     assert response.status_code == 202
-    assert response.json() == {"accepted": 3, "rejected": 0, "errors": []}
+    assert response.json() == {
+        "accepted": 3,
+        "rejected": 0,
+        "errors": [],
+        "committed_through_seq": 3,
+    }
     # No sleep needed: the 202 is only sent after the commit.
     assert await services.pool.fetchval("SELECT count(*) FROM events") == 3
 

@@ -158,10 +158,12 @@ class BatchWriter:
             events = [event for item in items for event in item.events]
             inserted, max_seq = await self._write_until_success(events)
             self._queued_events -= len(events)
+            # Update the committed watermark before waking the requests, so each 202 can
+            # report a through_seq that already includes its own events.
+            self._record_commit(events, inserted, max_seq)
             for item in items:
                 if not item.future.done():
                     item.future.set_result(None)
-            self._record_commit(events, inserted, max_seq)
 
     def _take_batch(self) -> list[_Pending]:
         """Pop whole requests until the batch is full (always at least one request)."""
