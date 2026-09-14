@@ -55,7 +55,7 @@ jobs:
           - app: shared
             script: npm test && npx tsc --noEmit
           - app: web-react
-            script: npm run lint && npm run build
+            script: npm run lint && npm test && npm run build
           - app: web-angular
             script: npx ng build && npx ng test --watch=false
           - app: mobile-react-native

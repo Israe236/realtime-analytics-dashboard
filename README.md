@@ -167,8 +167,9 @@ are configurable with `APP_ALERT_*` environment variables.
 
 | Suite | Count | What it covers |
 |---|---|---|
-| Backend + generator (pytest, real PostgreSQL) | 121 | validation edge cases; aggregates equal a full recompute after random batches with duplicates and late events; group commit, backpressure, retry and poison-row isolation; API behaviour for mixed/malformed/oversized/saturated requests; metric snapshots; hub slow-client handling; alert rules and evaluator; **WebSocket integration tests** against a real uvicorn server (two clients, abrupt disconnect, capacity limit, alert push); generator contract tests |
+| Backend + generator (pytest, real PostgreSQL) | 123 | validation edge cases; aggregates equal a full recompute after random batches with duplicates and late events; group commit, backpressure, retry and poison-row isolation; API behaviour for mixed/malformed/oversized/saturated requests; metric snapshots; hub slow-client handling; alert rules and evaluator; batched data retention; **WebSocket integration tests** against a real uvicorn server (two clients, abrupt disconnect, capacity limit, alert push); generator contract tests |
 | Shared TypeScript (vitest) | 14 | reconnect/backoff, heartbeat timeout, message handling, formatting, chart paths |
+| React (vitest + Testing Library) | 7 | WebSocket messages → React Query cache, connection badge countdown, KPI deltas (a rising cancellation rate is shown as bad) |
 | Angular (vitest) | 3 | live service: hello, alert lifecycle, stable slices |
 
 [CI](.github/workflows/ci.yml) (GitHub Actions) runs on every push: ruff, `mypy --strict`,
@@ -216,7 +217,9 @@ The dev servers proxy `/api` and `/ws` to `localhost:8080`.
   a well-behaved producer resends them). Scaling out needs a shared queue or per-process
   writers.
 - **No authentication or rate limiting per producer**, no TLS termination.
-- **Raw events grow forever**: no partitioning or retention policy on the `events` table yet.
+- **Retention is row-by-row deletion in batches** (raw events and minute buckets after 8 days,
+  hourly buckets after 400 days). It keeps tables bounded, but at very high volume a
+  partitioned table where expiry is a cheap `DROP PARTITION` would be better.
 - **Static alert thresholds**; no seasonality-aware baselines.
 - **Minute resolution**; only counts and sums are aggregated (no exact percentiles).
 - **Every snapshot re-sends the 60-minute window** (a few KB) instead of deltas — simple and
@@ -228,10 +231,11 @@ The dev servers proxy `/api` and `/ws` to `localhost:8080`.
 
 ## Next steps
 
-- Partition `events` by day and add a retention job; keep aggregates longer than raw data.
+- Partition `events` by day so retention becomes dropping whole partitions.
 - Horizontal scaling: several API processes, with PostgreSQL `LISTEN/NOTIFY` (or a real broker)
   to fan out commit signals, and per-dimension WebSocket subscriptions.
 - Send snapshot deltas with sequence numbers and resync on gaps.
 - Authentication for producers and dashboards.
 - Run the benchmark with the load client on a separate machine and profile the API at its limit.
-- Test the React Native app on Android/iOS devices; add component tests for the React app.
+- Test the React Native app on Android/iOS devices; add component tests for the Angular and
+  React Native apps.

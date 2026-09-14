@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     alert_fire_after_evaluations: int = 2
     alert_resolve_after_evaluations: int = 2
 
+    # --- retention ----------------------------------------------------------------------
+    # Raw rows must outlive max_event_age_s, otherwise a late retry could not be deduplicated.
+    retention_raw_days: int = 8
+    retention_minute_days: int = 8
+    retention_hour_days: int = 400
+    retention_interval_s: float = 3600.0
+
 
 @lru_cache
 def get_settings() -> Settings:

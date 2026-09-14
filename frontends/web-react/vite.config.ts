@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath } from 'node:url';
 
 import react from '@vitejs/plugin-react';
@@ -20,5 +21,9 @@ export default defineConfig({
       '/api': apiTarget,
       '/ws': { target: apiTarget, ws: true },
     },
+  },
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

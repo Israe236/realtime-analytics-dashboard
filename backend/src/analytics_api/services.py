@@ -22,6 +22,7 @@ from analytics_api.ingestion.dead_letter import DeadLetterWriter
 from analytics_api.ingestion.writer import BatchWriter
 from analytics_api.processing.metrics import MetricsReader
 from analytics_api.processing.rate_meter import RateMeter
+from analytics_api.processing.retention import RetentionJob, RetentionPolicy
 from analytics_api.realtime.broadcaster import Broadcaster
 from analytics_api.realtime.hub import Hub
 
@@ -35,6 +36,7 @@ class Services:
     hub: Hub
     broadcaster: Broadcaster
     alerts: AlertEvaluator
+    retention: RetentionJob
 
     @classmethod
     def build(cls, settings: Settings, pool: asyncpg.Pool) -> Services:
@@ -107,6 +109,15 @@ class Services:
             hub=hub,
             broadcaster=broadcaster,
             alerts=alerts,
+            retention=RetentionJob(
+                pool,
+                RetentionPolicy(
+                    raw_days=settings.retention_raw_days,
+                    minute_days=settings.retention_minute_days,
+                    hour_days=settings.retention_hour_days,
+                ),
+                interval_s=settings.retention_interval_s,
+            ),
         )
 
     async def start(self) -> None:
@@ -115,8 +126,10 @@ class Services:
         self.writer.start()
         self.broadcaster.start()
         self.alerts.start()
+        self.retention.start()
 
     async def stop(self) -> None:
+        await self.retention.stop()
         await self.alerts.stop()
         await self.broadcaster.stop()
         # Writer before dead letters: draining it may dead-letter rows, which must be flushed.

@@ -496,6 +496,50 @@ at the computer's LAN address, because `localhost` on a phone is the phone.
 As a precaution the WebSocket URL is built with a string replace rather than `new URL()`,
 since React Native's `URL` implementation has historically been incomplete.
 
+**Loading the charts lazily (React).** Recharts accounted for most of the React bundle
+(656 kB minified in one file). The two chart components are now loaded with `React.lazy`:
+the KPI cards, alerts and live feed paint from a 249 kB bundle, and the chart code (372 kB)
+arrives as a separate file a moment later, with a "Loading chart…" placeholder in between.
+The same data is on screen sooner, and a browser that already cached the chart chunk does
+not download it again when only the app code changes.
+
+**What the React tests check.** The WebSocket → React Query cache mapping (feed merge
+without duplicates, alert moving from active to history, pings ignored), the connection
+badge's reconnect countdown, and that KPI deltas are coloured by *meaning*, not direction:
+revenue going up is good, cancellation rate going up is bad.
+
+---
+
+## 11b. Data retention
+
+At 50 events/s the raw `events` table gains about 4.3 million rows a day; at 2,000 events/s,
+about 170 million. Without a limit, disk usage and vacuum/backup times grow forever. A
+background job (hourly) deletes expired rows:
+
+| Table | Kept for | Why |
+|---|---|---|
+| `events`, `dead_letter_events` | 8 days | debugging and replays; see the rule below |
+| `agg_minute`, `ingest_stats_minute` | 8 days | dashboards only read the last 2 hours |
+| `agg_hour` | 400 days | tiny (about 100 rows per hour) and useful for long-term trends |
+
+**The important rule: raw events must outlive the oldest event the API still accepts.**
+Deduplication works because a retried event hits the `event_id` primary key and is ignored.
+The API accepts events up to 7 days old. If raw rows were deleted after, say, 3 days, a
+5-day-old event retried by a producer would no longer find its original row — it would be
+inserted again and counted twice in the aggregates. So raw retention (8 days) is set longer
+than the maximum accepted age (7 days), and a unit test fails if someone changes one setting
+without the other.
+
+**Deleting without hurting ingestion.** One `DELETE` of millions of rows would hold locks and
+generate a burst of write-ahead log for a long time. The job deletes at most 10,000 rows per
+statement (`DELETE … WHERE ctid IN (SELECT ctid … LIMIT 10000)`) and yields between batches,
+so ingestion keeps flowing. The BRIN index on `occurred_at` makes finding old rows cheap,
+because in an append-mostly table they sit together at the beginning.
+
+**Better at larger scale:** partition `events` by day. Expiring a day then means dropping one
+partition — instant, no row-by-row delete and no table bloat left for vacuum to clean up.
+Row deletion was chosen here because it needs no schema change and is enough at these volumes.
+
 ---
 
 ## 12. How performance was measured (and how to read the numbers)
