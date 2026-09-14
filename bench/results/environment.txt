@@ -1,0 +1,11 @@
+date: 2026-09-14T13:16:23Z
+cpu: 13th Gen Intel(R) Core(TM) i7-13620H
+wsl: 8 vCPUs, 10 GiB RAM visible to WSL
+docker containers during the run:
+realtime-analytics-dashboard-web-angular-1 cpu=0.00% mem=7.977MiB / 10.7GiB
+realtime-analytics-dashboard-web-react-1 cpu=0.00% mem=8.812MiB / 10.7GiB
+realtime-analytics-dashboard-api-1 cpu=1.34% mem=52.39MiB / 10.7GiB
+realtime-analytics-api-1 cpu=18.12% mem=58.54MiB / 10.7GiB
+realtime-analytics-dashboard-generator-1 cpu=1.07% mem=58.73MiB / 10.7GiB
+realtime-analytics-postgres-1 cpu=0.30% mem=85.02MiB / 10.7GiB
+realtime-analytics-dashboard-postgres-1 cpu=1.55% mem=51.5MiB / 10.7GiB

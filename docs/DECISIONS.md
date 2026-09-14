@@ -498,7 +498,55 @@ since React Native's `URL` implementation has historically been incomplete.
 
 ---
 
-## 12. What went wrong during development (and the fixes)
+## 12. How performance was measured (and how to read the numbers)
+
+`bench/src/bench/load_test.py` drives the running Docker stack from the host.
+
+- **Sustained throughput** = events acknowledged with `202` (i.e. committed) divided by the
+  measured run time. Offered load is paced with a token bucket; `--rate 0` removes the limit.
+- **Ack latency** = HTTP request sent → `202` received, per batch. It includes JSON parsing,
+  validation of every event, waiting in the writer queue, and the database commit.
+- **End-to-end latency** = the moment a batch's events were created (`occurred_at`) → the
+  moment a WebSocket client *receives* the first snapshot that includes them. How do we know a
+  snapshot includes a batch? The `202` response carries `committed_through_seq`; the
+  broadcaster reads the committed watermark *before* querying, so any snapshot with
+  `through_seq >= committed_through_seq` contains those events. Both timestamps come from the
+  same clock on the benchmark host, so clock skew between machines plays no part.
+
+Results recorded on 2026-09-14 (raw JSON in `bench/results/`):
+
+| Offered load | Accepted events/s | Ack p50 / p95 / p99 | End-to-end p50 / p95 / p99 |
+|---|---|---|---|
+| 500 events/s | 498.3 | 90 / 156 / 227 ms | 201 / 322 / 357 ms |
+| 2,000 events/s | 1,984.0 | 73 / 169 / 312 ms | 193 / 328 / 430 ms |
+| unlimited (8 connections, batches of 500) | 7,901.9 | 403 / 1,178 / 2,035 ms | 544 / 1,286 / 2,139 ms |
+
+No request was rejected with 429 and every batch appeared in a snapshot.
+
+**How to read this.**
+
+- At 500 and 2,000 events/s the system keeps up exactly (accepted ≈ offered), and the median
+  time from an event being created to a dashboard receiving it is about 0.2 s. A large part of
+  that is by design: snapshots are throttled to one every 250 ms, so an event waits on
+  average about half of that interval for the next push.
+- In unlimited mode throughput rose to about 7,900 events/s, but latency grew several times
+  over: requests queue up behind each other. That is the expected shape of a saturated system —
+  the point where you would add API processes rather than push one harder.
+- **What limited the unlimited run was not isolated.** The load generator is itself a Python
+  process on the same laptop, building and serialising ~8,000 events per second, and competing
+  for the same CPU as the API and PostgreSQL. The true ceiling of the API alone could be higher
+  (or the client could be the bottleneck). A fair measurement would put the client on a
+  separate machine.
+
+**Test conditions (they matter).** Intel Core i7-13620H laptop, Windows 11 with Docker Desktop
+(WSL2, 8 vCPUs, 11 GB assigned). The API ran as a single uvicorn process; the generator and
+dashboards were stopped. Another unrelated Docker Compose stack was running on the same
+machine, and the host was under heavy memory pressure (see below). Treat these numbers as
+"what this laptop did", not as a capacity guarantee.
+
+---
+
+## 13. What went wrong during development (and the fixes)
 
 - **Docker build of the API failed** with a hatch error about duplicate files. The
   `pyproject.toml` had a `force-include` entry for the SQL migrations folder, which was
@@ -508,12 +556,20 @@ since React Native's `URL` implementation has historically been incomplete.
 - **Port 8000 already in use.** Another local Docker project was publishing port 8000. The
   API is now published on 8080 by default and every host port is overridable
   (`API_PORT`, `REACT_PORT`, …) instead of assuming a clean machine.
-- **Docker Desktop stopped responding** (its API returned HTTP 500 and `docker ps` hung) while
-  the backend stack, two frontend dev servers and a headless browser ran on a machine with
-  about 1.3 GB of free RAM. Fix: stop the dev servers, restart Docker Desktop, and verify the
-  dashboards through the lighter nginx containers instead. Lesson: a "live" system that
-  stops updating may be a host resource problem, not a code problem — which is exactly
-  what the `ingestion_stalled` alert and the freshness-lag indicator are for.
+- **Docker Desktop stopped responding, twice.** The first time its API returned HTTP 500 and
+  `docker ps` hung; the second time the engine had exited entirely. Both happened while the
+  host had well under 1 GB of free RAM: the WSL2 virtual machine (shared by Linux and Docker
+  Desktop) was holding about 13 GB, mostly Linux file cache plus other projects' processes.
+  Fixes: stop the frontend dev servers, restart Docker Desktop, verify the dashboards through
+  the lighter nginx containers, and run the benchmark with only PostgreSQL and the API. Lesson:
+  a "live" system that stops updating may be a host resource problem, not a code problem —
+  which is exactly what the `ingestion_stalled` alert and the freshness-lag indicator are for.
+  (It also shows up in the dashboard screenshots: the flat gap in the revenue chart is the
+  period when Docker was down.)
+- **Headless browser screenshots hung.** The first attempt ran Edge in headless mode with the
+  default browser profile while the API was down; the page's WebSocket kept retrying and the
+  process never exited. Fix: an isolated temporary profile, a hard time limit, and killing
+  only the processes that use that profile.
 - **Type-checking asyncpg pool connections.** `pool.acquire()` yields a proxy type, not a
   `Connection`, so strict mypy rejected passing it to the migration runner. The function now
   accepts both types explicitly.

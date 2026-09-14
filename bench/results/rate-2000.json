@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-09-14T13:18:37+00:00",
+  "config": {
+    "api": "http://localhost:8080",
+    "offered_rate_events_per_s": 2000.0,
+    "duration_s": 60.0,
+    "batch_size": 200,
+    "concurrency": 4
+  },
+  "host": {
+    "platform": "Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+    "python": "3.13.15",
+    "cpus": 8
+  },
+  "results": {
+    "measured_duration_s": 60.38,
+    "accepted_events": 119800,
+    "accepted_events_per_s": 1984.0,
+    "batches": 599,
+    "http_429": 0,
+    "other_errors": 0,
+    "ack_latency_ms": {
+      "p50": 73.0,
+      "p95": 169.4,
+      "p99": 312.4,
+      "max": 512.2
+    },
+    "end_to_end_latency_ms": {
+      "p50": 193.2,
+      "p95": 327.9,
+      "p99": 429.8,
+      "max": 564.2
+    },
+    "e2e_samples": 599,
+    "batches_never_seen_in_a_snapshot": 0,
+    "snapshots_received": 244
+  }
+}
