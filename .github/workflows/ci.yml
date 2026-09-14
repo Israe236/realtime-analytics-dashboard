@@ -30,7 +30,8 @@ jobs:
       TEST_DATABASE_ADMIN_URL: postgresql://analytics:analytics@localhost:55432/postgres
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # setup-uv publishes exact release tags only (no moving "v10" tag).
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: Install
         run: uv sync --frozen
       - name: Ruff (lint)
