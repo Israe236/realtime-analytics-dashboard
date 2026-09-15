@@ -115,6 +115,7 @@ class Services:
                     raw_days=settings.retention_raw_days,
                     minute_days=settings.retention_minute_days,
                     hour_days=settings.retention_hour_days,
+                    partition_days_back=settings.max_event_age_s // 86_400,
                 ),
                 interval_s=settings.retention_interval_s,
             ),
@@ -122,6 +123,8 @@ class Services:
 
     async def start(self) -> None:
         await self.alerts.load_active()
+        # Before any event is written: every day the API accepts must have a partition.
+        await self.retention.ensure_partitions()
         self.dead_letters.start()
         self.writer.start()
         self.broadcaster.start()

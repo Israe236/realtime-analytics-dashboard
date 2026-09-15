@@ -55,7 +55,7 @@ Choices worth being able to defend:
 
 | Table | What it holds | Key / index | Why |
 |---|---|---|---|
-| `events` | every accepted event | PK `event_id`; BRIN on `occurred_at` | PK doubles as the duplicate check. BRIN is tiny and good enough for rare time-range scans. |
+| `events` | every accepted event, **partitioned by day** | PK `(event_id, occurred_at)`; BRIN on `occurred_at` | PK doubles as the duplicate check. Daily partitions make expiry a `DROP`. BRIN is tiny and good enough for rare time-range scans. |
 | `agg_minute`, `agg_hour` | pre-computed counts and sums per time bucket | PK `(dimension, bucket, dim_value, event_type)` | Every dashboard read is "one dimension, recent buckets", which is exactly the leading part of this key. |
 | `ingest_stats_minute` | accepted / duplicate / rejected per minute | PK `bucket` | Pipeline health without scanning raw tables. |
 | `dead_letter_events` | rejected input + error | BRIN on `received_at` | Only inspected by humans. |
@@ -118,7 +118,7 @@ Three properties fall out of this design:
 
 1. **Duplicates never double-count.** Only rows that `RETURNING` reports as newly inserted
    feed the aggregates. If a producer retries a batch, the retried events conflict on
-   `event_id`, are not returned, and add nothing.
+   `(event_id, occurred_at)`, are not returned, and add nothing.
 2. **Atomic.** One statement = one transaction. There is no moment where an event is stored
    but not yet counted, or counted but lost.
 3. **Late events land in the right bucket.** Buckets come from `occurred_at`, not arrival
@@ -523,22 +523,52 @@ background job (hourly) deletes expired rows:
 | `agg_hour` | 400 days | tiny (about 100 rows per hour) and useful for long-term trends |
 
 **The important rule: raw events must outlive the oldest event the API still accepts.**
-Deduplication works because a retried event hits the `event_id` primary key and is ignored.
+Deduplication works because a retried event hits the `(event_id, occurred_at)` primary key and
+is ignored.
 The API accepts events up to 7 days old. If raw rows were deleted after, say, 3 days, a
 5-day-old event retried by a producer would no longer find its original row — it would be
 inserted again and counted twice in the aggregates. So raw retention (8 days) is set longer
 than the maximum accepted age (7 days), and a unit test fails if someone changes one setting
 without the other.
 
-**Deleting without hurting ingestion.** One `DELETE` of millions of rows would hold locks and
-generate a burst of write-ahead log for a long time. The job deletes at most 10,000 rows per
-statement (`DELETE … WHERE ctid IN (SELECT ctid … LIMIT 10000)`) and yields between batches,
-so ingestion keeps flowing. The BRIN index on `occurred_at` makes finding old rows cheap,
-because in an append-mostly table they sit together at the beginning.
+**Raw events: one partition per day.** `events` is a *partitioned table*: to the application it
+is one table, but PostgreSQL stores each UTC day in its own child table (`events_p20260915`,
+…). Expiring a day is `DROP TABLE events_p20260906` — it takes milliseconds whether the day
+held a thousand rows or a hundred million, writes almost no write-ahead log, and leaves no
+dead rows for vacuum to clean up. A `DELETE` of the same rows would lock and churn for minutes.
+Queries with a time filter also skip other days' partitions entirely ("partition pruning").
 
-**Better at larger scale:** partition `events` by day. Expiring a day then means dropping one
-partition — instant, no row-by-row delete and no table bloat left for vacuum to clean up.
-Row deletion was chosen here because it needs no schema change and is enough at these volumes.
+How partitions stay ready:
+
+- The application creates any missing partition for every day the API accepts (the last 7
+  days) plus 2 days ahead — at start-up, *before* the writer begins, and again every hour. So
+  midnight never arrives without a partition for the new day.
+- A `DEFAULT` partition catches anything outside those days (for example an event whose
+  timestamp was accepted while a partition was somehow missing). Normal traffic never lands
+  there; retention removes expired rows from it with batched deletes.
+
+**The trade-off: the dedupe key now includes the timestamp.** PostgreSQL requires a unique
+key on a partitioned table to contain the partition column, so the primary key is
+`(event_id, occurred_at)` instead of `event_id` alone. A retry resends the same payload —
+same id, same timestamp — so retries are still ignored. What is *no longer* caught is the
+same `event_id` sent with a *different* timestamp; that would be stored as a second event. A
+test documents this behaviour. If a producer could do that, the fix would be a small
+unpartitioned `event_ids` table used only for deduplication.
+
+**Deleting without hurting ingestion.** For the tables that are not partitioned (dead letters,
+minute buckets, ingest stats) and for the default partition, one `DELETE` of millions of rows
+would hold locks and generate a burst of write-ahead log for a long time. The job deletes at
+most 10,000 rows per statement (`DELETE … WHERE ctid IN (SELECT ctid … LIMIT 10000)`) and
+yields between batches, so ingestion keeps flowing. (`ctid` — a row's physical address — is
+only unique inside one table, which is why the default partition is targeted directly and
+never through the partitioned parent.)
+
+**Migrating existing data.** Migration `002_partition_events.sql` renames the old table,
+creates the partitioned one with partitions covering the existing days, copies every row
+while keeping its `seq` (so the WebSocket watermark keeps increasing), moves the identity
+sequence past the highest copied value, and drops the old table — all in one transaction, so
+a failure leaves the original table untouched. On the demo database it converted 1,533,135
+events; the API container went from start to healthy in 19 seconds, migration included.
 
 ---
 

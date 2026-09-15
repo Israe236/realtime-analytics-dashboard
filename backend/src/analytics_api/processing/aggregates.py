@@ -3,7 +3,8 @@
 The whole write path for a batch is ONE SQL statement built from data-modifying CTEs:
 
 1. ``input``    – the batch, passed as one array per column and expanded with ``unnest``.
-2. ``inserted`` – ``INSERT INTO events … ON CONFLICT (event_id) DO NOTHING RETURNING …``.
+2. ``inserted`` – ``INSERT INTO events … ON CONFLICT (event_id, occurred_at) DO NOTHING
+   RETURNING …`` (``events`` is partitioned by day, so its key must include ``occurred_at``).
    Only rows that were really new come out of RETURNING, so a duplicate event can never
    be counted twice in the aggregates.
 3. ``minute_rollup`` / ``hour_rollup`` – group the *inserted* rows by bucket with
@@ -81,7 +82,7 @@ WITH input AS (
 inserted AS (
     INSERT INTO events ({_COLUMN_LIST})
     SELECT {_COLUMN_LIST} FROM input
-    ON CONFLICT (event_id) DO NOTHING
+    ON CONFLICT (event_id, occurred_at) DO NOTHING
     RETURNING seq, event_type, occurred_at, amount_mad, category, city, payment_method
 ),
 {_rollup_cte("minute_rollup", "agg_minute", "minute")},

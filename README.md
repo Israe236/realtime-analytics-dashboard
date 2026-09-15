@@ -167,10 +167,10 @@ are configurable with `APP_ALERT_*` environment variables.
 
 | Suite | Count | What it covers |
 |---|---|---|
-| Backend + generator (pytest, real PostgreSQL) | 123 | validation edge cases; aggregates equal a full recompute after random batches with duplicates and late events; group commit, backpressure, retry and poison-row isolation; API behaviour for mixed/malformed/oversized/saturated requests; metric snapshots; hub slow-client handling; alert rules and evaluator; batched data retention; **WebSocket integration tests** against a real uvicorn server (two clients, abrupt disconnect, capacity limit, alert push); generator contract tests |
+| Backend + generator (pytest, real PostgreSQL) | 126 | validation edge cases; aggregates equal a full recompute after random batches with duplicates and late events; group commit, backpressure, retry and poison-row isolation; API behaviour for mixed/malformed/oversized/saturated requests; metric snapshots; hub slow-client handling; alert rules and evaluator; daily partitions and data retention; **WebSocket integration tests** against a real uvicorn server (two clients, abrupt disconnect, capacity limit, alert push); generator contract tests |
 | Shared TypeScript (vitest) | 14 | reconnect/backoff, heartbeat timeout, message handling, formatting, chart paths |
 | React (vitest + Testing Library) | 7 | WebSocket messages → React Query cache, connection badge countdown, KPI deltas (a rising cancellation rate is shown as bad) |
-| Angular (vitest) | 3 | live service: hello, alert lifecycle, stable slices |
+| Angular (vitest) | 7 | live service (hello, alert lifecycle, stable slices); components: connection badge, KPI deltas, alert banner, live feed row tracking |
 
 [CI](.github/workflows/ci.yml) (GitHub Actions) runs on every push: ruff, `mypy --strict`,
 pytest with a PostgreSQL service container, a check that the generated TypeScript protocol
@@ -217,9 +217,9 @@ The dev servers proxy `/api` and `/ws` to `localhost:8080`.
   a well-behaved producer resends them). Scaling out needs a shared queue or per-process
   writers.
 - **No authentication or rate limiting per producer**, no TLS termination.
-- **Retention is row-by-row deletion in batches** (raw events and minute buckets after 8 days,
-  hourly buckets after 400 days). It keeps tables bounded, but at very high volume a
-  partitioned table where expiry is a cheap `DROP PARTITION` would be better.
+- **Deduplication key includes the timestamp.** `events` is partitioned by day, so its primary
+  key is `(event_id, occurred_at)`: retries of the same payload are ignored, but the same
+  `event_id` sent again with a *different* timestamp would be stored twice.
 - **Static alert thresholds**; no seasonality-aware baselines.
 - **Minute resolution**; only counts and sums are aggregated (no exact percentiles).
 - **Every snapshot re-sends the 60-minute window** (a few KB) instead of deltas — simple and
@@ -231,7 +231,7 @@ The dev servers proxy `/api` and `/ws` to `localhost:8080`.
 
 ## Next steps
 
-- Partition `events` by day so retention becomes dropping whole partitions.
+- A small unpartitioned `event_ids` table if producers may resend an id with a changed timestamp.
 - Horizontal scaling: several API processes, with PostgreSQL `LISTEN/NOTIFY` (or a real broker)
   to fan out commit signals, and per-dimension WebSocket subscriptions.
 - Send snapshot deltas with sequence numbers and resync on gaps.

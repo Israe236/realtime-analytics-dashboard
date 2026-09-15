@@ -23,8 +23,10 @@ async def count(db: asyncpg.Pool, table: str) -> int:
     return int(value)
 
 
-async def test_deletes_only_expired_rows_in_batches(db: asyncpg.Pool) -> None:
-    await insert_events(db, days_ago=10, count=25)  # expired raw + minute buckets
+async def test_deletes_expired_rows_in_batches(db: asyncpg.Pool) -> None:
+    # 10 days before NOW there is no daily partition, so these rows sit in the default
+    # partition and must be removed with batched row deletes.
+    await insert_events(db, days_ago=10, count=25)
     await insert_events(db, days_ago=1, count=5)  # kept
     await db.execute(
         "INSERT INTO dead_letter_events (received_at, reason, payload) VALUES ($1, 'x', 'old')",
@@ -32,24 +34,21 @@ async def test_deletes_only_expired_rows_in_batches(db: asyncpg.Pool) -> None:
     )
 
     # batch_size 7 forces several DELETE statements for the 25 old events.
-    job = RetentionJob(
-        db, RetentionPolicy(raw_days=8, minute_days=8, hour_days=400, batch_size=7), interval_s=3600
-    )
-    deleted = await job.run_once(NOW)
+    policy = RetentionPolicy(raw_days=8, minute_days=8, hour_days=400, batch_size=7)
+    job = RetentionJob(db, policy, interval_s=3600)
+    result = await job.run_once(NOW)
 
-    assert deleted["events"] == 25
-    assert deleted["dead_letter_events"] == 1
-    assert deleted["agg_hour"] == 0  # hourly history is kept for 400 days
+    assert result["events_default"] == 25
+    assert result["dead_letter_events"] == 1
+    assert result["agg_hour"] == 0  # hourly history is kept for 400 days
     assert await count(db, "events") == 5
     assert await db.fetchval("SELECT min(bucket) FROM agg_minute") >= NOW - timedelta(days=8)
-    assert (
-        await db.fetchval(
-            "SELECT count(*) FROM agg_hour WHERE bucket < $1", NOW - timedelta(days=8)
-        )
-        > 0
+    old_hours = await db.fetchval(
+        "SELECT count(*) FROM agg_hour WHERE bucket < $1", NOW - timedelta(days=8)
     )
+    assert old_hours > 0
 
-    # Idempotent: a second run has nothing left to delete.
+    # Idempotent: a second run creates, drops and deletes nothing.
     assert not any((await job.run_once(NOW)).values())
 
 
