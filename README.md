@@ -224,8 +224,8 @@ The dev servers proxy `/api` and `/ws` to `localhost:8080`.
 - **Minute resolution**; only counts and sums are aggregated (no exact percentiles).
 - **Every snapshot re-sends the 60-minute window** (a few KB) instead of deltas — simple and
   self-healing, but more bytes per client.
-- **The React Native app was verified by type-checking, a web export and a browser screenshot
-  of that web build — not yet on a physical phone or emulator.**
+- **The React Native app has no automated UI tests**; it was verified by type-checking, a web
+  export, and running it on a physical phone through Expo Go against the live stack.
 - **Benchmark caveats**: one laptop, client on the same machine, bottleneck at the top rate not
   isolated.
 
@@ -237,5 +237,4 @@ The dev servers proxy `/api` and `/ws` to `localhost:8080`.
 - Send snapshot deltas with sequence numbers and resync on gaps.
 - Authentication for producers and dashboards.
 - Run the benchmark with the load client on a separate machine and profile the API at its limit.
-- Test the React Native app on Android/iOS devices; add component tests for the Angular and
-  React Native apps.
+- Component tests for the React Native app; a production build (EAS) instead of Expo Go.
